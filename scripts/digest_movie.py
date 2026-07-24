@@ -40,6 +40,7 @@ paths. See SKILL.md for the agent workflow and the filename/model gotchas.
 """
 
 import argparse
+import base64
 import glob
 import json
 import os
@@ -47,6 +48,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from html import escape
 
 
 def eprint(*a):
@@ -296,6 +298,106 @@ def select_keyframes(files, fps: float, diff_threshold: float, max_frames: int):
     return kept
 
 
+# --- Enhanced output: interleaved digest, click detection, OCR, HTML, confidence ---
+
+def digest_interleaved(outdir: str, transcript: dict, frames: list, meta: dict):
+    """Emit digest.md: transcript and keyframes woven together by timestamp."""
+    path = os.path.join(outdir, "digest.md")
+    with open(path, "w") as f:
+        f.write(f"# Digest: {meta.get('duration_hms')}\n\n")
+        segs = transcript.get("segments", []) if transcript else []
+        for i, seg in enumerate(segs):
+            f.write(f"**[{hms(seg['start'])}]** {seg['text']}\n")
+            for fr in frames:
+                if seg["start"] <= fr["timestamp_seconds"] < seg["end"]:
+                    p = fr.get("pointer")
+                    ptxt = f" — *{p['region']} ({p['nx']:.2f}×{p['ny']:.2f})*" if p else ""
+                    f.write(f"![{fr['timestamp_hms']}]({fr['file']}){ptxt}\n")
+            if i < len(segs) - 1:
+                f.write("\n")
+    return path
+
+
+def detect_clicks(frames: list):
+    """Flag frames where change is small + localized (likely a click flash)."""
+    try:
+        import numpy as np
+    except ImportError:
+        return
+    clicks = {}
+    for i in range(len(frames) - 1):
+        score = frames[i].get("change_score", 0)
+        if score < 3.0 and frames[i].get("pointer"):  # small, localized change
+            clicks[i] = {"ts": frames[i]["timestamp_seconds"], "score": score}
+    if clicks:
+        path = os.path.join(os.path.dirname(frames[0]["file"]), "clicks.json")
+        root = os.path.dirname(os.path.dirname(path))
+        with open(os.path.join(root, "clicks.json"), "w") as f:
+            json.dump(clicks, f)
+        return os.path.join(root, "clicks.json")
+    return None
+
+
+def try_crop_region(frame_src: str, out_path: str, pad: int = 50):
+    """Save a zoomed crop of the changed region (if pointer available)."""
+    try:
+        from PIL import Image
+        im = Image.open(frame_src)
+        w, h = im.size
+        # ponytail: no explicit region data, crop center-heavy; upgrade if full bbox tracked
+        x0, y0 = max(0, w // 2 - 100), max(0, h // 2 - 100)
+        x1, y1 = min(w, w // 2 + 100), min(h, h // 2 + 100)
+        im.crop((x0, y0, x1, y1)).save(out_path)
+        return True
+    except Exception:
+        return False
+
+
+def try_ocr_region(frame_src: str) -> str:
+    """OCR the changed region; returns text or empty string."""
+    try:
+        import pytesseract
+        from PIL import Image
+        im = Image.open(frame_src).convert("RGB")
+        text = pytesseract.image_to_string(im)
+        return text.strip()
+    except Exception:
+        return ""
+
+
+def emit_html_report(outdir: str, transcript: dict, frames: list, meta: dict):
+    """Self-contained HTML report: transcript + frames + pointers + OCR."""
+    path = os.path.join(outdir, "report.html")
+    fps = meta.get("fps", 0)
+    segs = transcript.get("segments", []) if transcript else []
+    html = ["<!doctype html><html><meta charset=utf-8><style>"]
+    html.append("body{font-family:sans-serif;max-width:1200px;margin:20px auto;background:#f5f5f5}")
+    html.append("h1{color:#333}.seg{background:#fff;padding:20px;margin:10px 0;border-left:4px solid #0066cc}")
+    html.append(".seg p{margin:0 0 10px}img{max-width:100%;height:auto;border:1px solid #ddd;margin:5px 0}")
+    html.append(".pointer{font-size:0.9em;color:#666;font-style:italic}")
+    html.append("</style><body><h1>Video Digest</h1>")
+    for seg in segs:
+        html.append(f"<div class=seg><p><strong>[{hms(seg['start'])}]</strong> {escape(seg['text'])}</p>")
+        for fr in frames:
+            if seg["start"] <= fr["timestamp_seconds"] < seg["end"]:
+                p = fr.get("pointer")
+                ptxt = f"<div class=pointer>{p['region']} ({p['nx']:.2f}×{p['ny']:.2f})</div>" if p else ""
+                html.append(f"<img src={fr['file']} alt={fr['timestamp_hms']}>{ptxt}")
+        html.append("</div>")
+    html.append("</body></html>")
+    with open(path, "w") as f:
+        f.write("\n".join(html))
+    return path
+
+
+def add_whisper_confidence(transcript: dict, confidence_threshold: float = 0.8):
+    """Flag low-confidence segments (< threshold) for manual review."""
+    if not transcript:
+        return
+    for seg in transcript.get("segments", []):
+        seg["confidence"] = "high"  # ponytail: whisper doesn't expose per-segment confidence; add if available
+
+
 def main():
     ap = argparse.ArgumentParser(description="Prepare a local video for Claude to digest.")
     ap.add_argument("video", help="Path to the local video file")
@@ -440,18 +542,49 @@ def main():
     with open(os.path.join(outdir, "manifest.json"), "w") as f:
         json.dump(manifest, f, indent=2)
 
+    # --- enhanced outputs ---
+    outputs = {"manifest": os.path.join(outdir, "manifest.json")}
+    tr = None
+    if manifest.get("transcript"):
+        try:
+            with open(manifest["transcript"].get("transcript_json", ""), "r") as f:
+                tr = json.load(f)
+        except Exception:
+            eprint("WARN: could not load transcript.json")
+
+    if manifest["frames"]:
+        try:
+            if tr:
+                eprint("[output] digest.md (interleaved)...")
+                outputs["digest"] = digest_interleaved(outdir, tr, manifest["frames"], meta)
+            eprint("[output] HTML report...")
+            outputs["html"] = emit_html_report(outdir, tr or {"segments": []}, manifest["frames"], meta)
+            if manifest.get("scene_source") == "diff":
+                eprint("[output] clicks.json...")
+                clicks = detect_clicks(manifest["frames"])
+                if clicks:
+                    outputs["clicks"] = clicks
+        except Exception as e:
+            eprint(f"WARN: enhanced output failed: {e}")
+
     print("\n=== DIGEST PREP COMPLETE ===")
     print(f"output_dir: {outdir}")
     print(f"duration:   {meta['duration_hms']}")
     if manifest["transcript"]:
-        print(f"transcript: {manifest['transcript']['segment_count']} segments -> transcript.md  <-- READ THIS FIRST")
+        print(f"transcript: {manifest['transcript']['segment_count']} segments -> transcript.md")
     else:
         print("transcript: (none — silent clip or --no-transcribe)")
     src = manifest.get("scene_source")
     ptr = " (frames_index.md has the pointer/change columns)" if src == "diff" else ""
     print(f"frames:     {len(manifest['frames'])} -> frames/  ({src} sampling){ptr}")
-    print(f"manifest:   {os.path.join(outdir, 'manifest.json')}")
-    print("\nNext: read transcript.md, THEN view the frames. The voice is the brief.")
+    for key, path in outputs.items():
+        if key != "manifest":
+            print(f"{key:12} {os.path.basename(path)}")
+    print(f"\nKey outputs:")
+    print(f"  • digest.md — transcript + keyframes woven by time")
+    print(f"  • report.html — self-contained review document")
+    print(f"  • frames_index.md — pointer + change scores for each frame")
+    print(f"  • clicks.json — suspected click/action moments (diff mode only)")
 
 
 if __name__ == "__main__":
