@@ -57,6 +57,16 @@ See `SKILL.md` for the full agent workflow, all flags, and the gotchas
 (macOS narrow-space filenames, `tiny` mishearings, the scenedetect/OpenCV
 fallback).
 
+## What you get
+
+Every digest includes:
+
+1. **digest.md** — transcript + keyframes woven by time (the 1-document read)
+2. **report.html** — self-contained HTML review (email-friendly, no deps)
+3. **clicks.json** — detected click/action moments (QA mode only)
+4. **frames_index.md** — pointer + change-score table for each frame
+5. **transcript files** — `.md`, `.srt`, `.json` for grepping + remixing
+
 ## Requirements
 
 - `ffmpeg` + `ffprobe` on PATH — required.

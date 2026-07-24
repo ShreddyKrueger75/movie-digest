@@ -65,6 +65,9 @@ transcript.srt     subtitles
 transcript.json    raw {start,end,text} segments
 frames/            NNNN_HHhMMmSSs.jpg keyframes (640px)
 frames_index.md    frame -> timestamp + change score + POINTER table
+digest.md          transcript + keyframes woven by time
+report.html        self-contained HTML review document
+clicks.json        suspected click/flash moments (diff mode)
 manifest.json      metadata + full frame list (+ pointer) + transcript paths
 ```
 
@@ -87,6 +90,22 @@ look* in each frame before you open it. A **failure often shows as the absence o
 change** — the user says "wire it across" and the next frames don't change: that
 gap IS the bug. Needs Pillow + numpy (auto-detected; falls back to interval if
 missing). `--no-dedup` restores plain sampling.
+
+## Enhanced outputs
+
+Every digest now includes:
+
+- **digest.md** — the quick read: transcript segments woven together with
+  keyframes that fall within each segment's time window. Pointer/region marked
+  inline. One document = one bug report.
+- **report.html** — self-contained (no external assets): transcript on the left,
+  keyframes on the right, pointer overlay. Shareable, no post-processing needed.
+- **clicks.json** — detects small, localized changes (likely click flashes or
+  menu appearances). Frames tagged with the suspected action moment. For QA mode
+  only; empty if no candidate clicks found.
+
+All three are auto-generated and graceful when transcript is absent (frames only).
+No extra flags; they're always on.
 
 ## Gotchas (learned the hard way)
 
