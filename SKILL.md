@@ -59,6 +59,7 @@ Then **read `<out>/transcript.md` first**, then view the frames listed in
 Flags that matter:
 - `--mode insano|strict|standard|lenient` — frame selection comprehensiveness (saves to config; default standard).
 - `--no-report` — skip HTML report (frames + digest.md only).
+- `--analyze` — synthesize a structured bug report from the digest (requires `ANTHROPIC_API_KEY`).
 - `--model tiny|base|small|medium|large-v3` — `tiny` for a quick screen
   recording, `base`/`small` for a real film. Bigger = more accurate, slower.
 - `--max-frames N` — cap on keyframes (default 60; 12–20 for a short clip).
@@ -115,9 +116,12 @@ Every digest now includes:
 - **clicks.json** — detects small, localized changes (likely click flashes or
   menu appearances). Frames tagged with the suspected action moment. For QA mode
   only; empty if no candidate clicks found.
+- **bug_report.md** (with `--analyze`) — Claude synthesizes a structured bug report:
+  issue title, steps to reproduce, expected/actual behavior, affected areas, and
+  key timestamps. Requires `ANTHROPIC_API_KEY` environment variable.
 
-All three are auto-generated and graceful when transcript is absent (frames only).
-No extra flags; they're always on.
+The first three are auto-generated and graceful when transcript is absent (frames only).
+Bug report generation is opt-in via `--analyze`.
 
 ## Gotchas (learned the hard way)
 

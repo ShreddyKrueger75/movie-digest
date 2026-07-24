@@ -44,12 +44,13 @@ it a screen recording and ask what happens.
 
 ```bash
 python3 scripts/digest_movie.py "/path/to/clip.mov" \
-  --out "/path/to/clip.digest" --model tiny --max-frames 25
+  --out "/path/to/clip.digest" --model tiny --max-frames 25 --analyze
 ```
 
 - `--model tiny|base|small|medium|large-v3` — accuracy vs. speed. `tiny` for a
   quick screen recording; `base`/`small` for a real film.
 - `--max-frames N` — keyframe cap (default 60).
+- `--analyze` — synthesize a structured bug report (needs `ANTHROPIC_API_KEY` env var).
 - `--no-frames` — transcript only, fast.
 - `--no-transcribe` — frames only (silent footage).
 
@@ -64,6 +65,7 @@ Every digest includes:
 **Primary outputs** (the QA workflow):
 - **digest.md** — transcript + keyframes woven by time. Read top-to-bottom; pointer + region marked inline on each frame.
 - **report.html** — self-contained HTML review (email-friendly, no external deps). Transcript on left, keyframes on right, pointer overlay. Shareable as-is.
+- **bug_report.md** (with `--analyze`) — Claude-synthesized structured bug report: issue title, repro steps, expected/actual, affected areas, key timestamps. Ready to paste into GitHub.
 - **clicks.json** — detected click/action moments (small, localized changes). Frame index + estimated timestamp for each suspected interaction.
 
 **Reference outputs**:
