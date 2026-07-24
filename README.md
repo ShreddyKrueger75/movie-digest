@@ -61,11 +61,25 @@ fallback).
 
 Every digest includes:
 
-1. **digest.md** — transcript + keyframes woven by time (the 1-document read)
-2. **report.html** — self-contained HTML review (email-friendly, no deps)
-3. **clicks.json** — detected click/action moments (QA mode only)
-4. **frames_index.md** — pointer + change-score table for each frame
-5. **transcript files** — `.md`, `.srt`, `.json` for grepping + remixing
+**Primary outputs** (the QA workflow):
+- **digest.md** — transcript + keyframes woven by time. Read top-to-bottom; pointer + region marked inline on each frame.
+- **report.html** — self-contained HTML review (email-friendly, no external deps). Transcript on left, keyframes on right, pointer overlay. Shareable as-is.
+- **clicks.json** — detected click/action moments (small, localized changes). Frame index + estimated timestamp for each suspected interaction.
+
+**Reference outputs**:
+- **frames_index.md** — pointer + change-score table for every kept frame. Glanceable; tells you where to look before opening an image.
+- **transcript files** — `.md`, `.srt`, `.json` for grepping, remixing, or feeding to other tools.
+- **manifest.json** — metadata, frame list with pointers, and transcript paths.
+
+## Modes — diff-threshold presets
+
+`--mode strict|standard|lenient` — tune how aggressive frame selection is.
+
+- **`strict`** — keep only major changes (high diff threshold). 5–10 frames per 2-min clip. For dense UIs where you only need the landmark moments.
+- **`standard`** (default) — balanced. 10–20 frames per 2-min clip. Catches blocks placed, menus opened, dialogs appeared.
+- **`lenient`** — capture subtle tweaks (low diff threshold). 20–40 frames per 2-min clip. For detailed reviews or specs that need every parameter tweak visible.
+
+All modes keep the pointer and change-score columns, digest.md, and report.html. Only the number of kept frames changes.
 
 ## Requirements
 

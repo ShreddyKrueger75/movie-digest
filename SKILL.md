@@ -35,6 +35,17 @@ optional and auto-detected — without the first it skips the transcript; withou
 the second it samples frames at even time intervals (fine for screen
 recordings).
 
+## Setup (first run)
+
+On first run, the script will prompt for your defaults:
+
+```
+(1) Diff-threshold mode — how aggressive frame selection is
+(2) Generate HTML report by default?
+```
+
+Your choices save to `~/.movie-digest.json` — reconfigure anytime by deleting that file.
+
 ## Run (the one path)
 
 ```bash
@@ -46,11 +57,12 @@ Then **read `<out>/transcript.md` first**, then view the frames listed in
 `<out>/frames_index.md` in batches of ~10–15. Anchor every claim to a timestamp.
 
 Flags that matter:
+- `--mode strict|standard|lenient` — frame selection aggressiveness (saves to config; default standard).
+- `--no-report` — skip HTML report (frames + digest.md only).
 - `--model tiny|base|small|medium|large-v3` — `tiny` for a quick screen
   recording, `base`/`small` for a real film. Bigger = more accurate, slower.
 - `--max-frames N` — cap on keyframes (default 60; 12–20 for a short clip).
-- `--diff-threshold N` — how much a frame must change to be kept (default 1.5;
-  lower = more frames). See QA mode below.
+- `--diff-threshold N` — override mode's threshold (lower = more frames, default 1.5 for standard).
 - `--no-dedup` — turn OFF diff selection + pointer; use plain interval/scene
   sampling instead.
 - `--no-frames` — transcript only, fast. Use when you only need the narration.

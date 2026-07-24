@@ -398,6 +398,55 @@ def add_whisper_confidence(transcript: dict, confidence_threshold: float = 0.8):
         seg["confidence"] = "high"  # ponytail: whisper doesn't expose per-segment confidence; add if available
 
 
+def config_path() -> str:
+    return os.path.expanduser("~/.movie-digest.json")
+
+
+def load_or_init_config() -> dict:
+    path = config_path()
+    if os.path.isfile(path):
+        try:
+            with open(path) as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+def prompt_config() -> dict:
+    """First-run setup: ask user for mode and report preference."""
+    eprint("\n╔════════════════════════════════════════════════════════════╗")
+    eprint("║         movie-digest: First-Run Configuration              ║")
+    eprint("╚════════════════════════════════════════════════════════════╝\n")
+
+    eprint("(1) Diff-threshold mode — how aggressive frame selection is:")
+    eprint("    • strict   = keep only major UI changes (5–10 frames per 2-min)")
+    eprint("    • standard = balanced, catch blocks/menus/dialogs (10–20 frames)")
+    eprint("    • lenient  = capture subtle tweaks (20–40 frames)")
+    eprint("    (You can override with --mode on each run.)\n")
+    mode_choice = input("  Enter s/t/l [default: t]: ").strip().lower()
+    mode_map = {"s": "strict", "t": "standard", "l": "lenient"}
+    mode = mode_map.get(mode_choice, "standard")
+    eprint(f"  → {mode.upper()}\n")
+
+    eprint("(2) Generate HTML report by default?")
+    eprint("    (Self-contained review page; email-friendly.)")
+    eprint("    (You can skip with --no-report on each run.)\n")
+    report_choice = input("  Generate report? [default: yes, y/n]: ").strip().lower()
+    no_report = report_choice == "n"
+    eprint(f"  → {'SKIP' if no_report else 'GENERATE'}\n")
+
+    cfg = {"mode": mode, "no_report": no_report}
+    try:
+        with open(config_path(), "w") as f:
+            json.dump(cfg, f, indent=2)
+        eprint(f"✓ Config saved to {config_path()}")
+        eprint("  (Reconfigure anytime by deleting this file.)\n")
+    except Exception as e:
+        eprint(f"WARN: could not save config: {e}\n")
+    return cfg
+
+
 def main():
     ap = argparse.ArgumentParser(description="Prepare a local video for Claude to digest.")
     ap.add_argument("video", help="Path to the local video file")
@@ -414,12 +463,33 @@ def main():
                     help="Disable diff-based selection + pointer (fall back to scene/interval sampling)")
     ap.add_argument("--sample-fps", type=float, default=2.0,
                     help="Dense sample rate for diff mode (default 2/s)")
-    ap.add_argument("--diff-threshold", type=float, default=1.5,
-                    help="Mean gray delta to count a frame as changed (default 1.5; lower = more frames)")
+    ap.add_argument("--mode", choices=["strict", "standard", "lenient"], default="standard",
+                    help="Diff threshold preset: strict (5–10 frames), standard (10–20), lenient (20–40) per 2-min clip (default standard)")
+    ap.add_argument("--diff-threshold", type=float, default=None,
+                    help="Mean gray delta to count a frame as changed (overrides --mode; lower = more frames)")
     ap.add_argument("--no-transcribe", action="store_true", help="Skip transcription")
     ap.add_argument("--no-frames", action="store_true", help="Skip frame extraction")
+    ap.add_argument("--no-report", action="store_true", help="Skip HTML report generation")
     ap.add_argument("--keep-audio", action="store_true", help="Keep the extracted wav")
     args = ap.parse_args()
+
+    # Load or initialize config
+    cfg = load_or_init_config()
+    if not cfg:
+        cfg = prompt_config()
+
+    # Apply config defaults if CLI args not explicitly set (mode and no_report)
+    # For simplicity: if args.mode is still "standard" (default), use config mode
+    # and if args.no_report is False (default), use config no_report
+    if args.mode == "standard" and "mode" in cfg:
+        args.mode = cfg.get("mode", "standard")
+    if not args.no_report and "no_report" in cfg:
+        args.no_report = cfg.get("no_report", False)
+
+    # Map mode to diff_threshold unless explicitly overridden
+    if args.diff_threshold is None:
+        mode_thresholds = {"strict": 2.5, "standard": 1.5, "lenient": 0.8}
+        args.diff_threshold = mode_thresholds.get(args.mode, 1.5)
 
     require_tool("ffmpeg")
     require_tool("ffprobe")
@@ -557,8 +627,9 @@ def main():
             if tr:
                 eprint("[output] digest.md (interleaved)...")
                 outputs["digest"] = digest_interleaved(outdir, tr, manifest["frames"], meta)
-            eprint("[output] HTML report...")
-            outputs["html"] = emit_html_report(outdir, tr or {"segments": []}, manifest["frames"], meta)
+            if not args.no_report:
+                eprint("[output] HTML report...")
+                outputs["html"] = emit_html_report(outdir, tr or {"segments": []}, manifest["frames"], meta)
             if manifest.get("scene_source") == "diff":
                 eprint("[output] clicks.json...")
                 clicks = detect_clicks(manifest["frames"])
