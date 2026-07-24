@@ -423,24 +423,29 @@ def prompt_config() -> dict:
 
     eprint("(1) Frame selection mode:")
     eprint("")
-    eprint("  STRICT — Landmark moments only")
-    eprint("    5–10 frames per 2-min. Dense UIs, complex state changes.")
-    eprint("    Skip small tweaks; focus on major state shifts.")
-    eprint("    → Best for: Block placement, routing changes, mode switches.")
+    eprint("  INSANO — Every single change")
+    eprint("    100+ frames per 2-min. Every pixel shift, every cursor twitch.")
+    eprint("    For forensic analysis of every interaction.")
+    eprint("    → Best for: Debugging UX flows, pixel-perfect specs.")
+    eprint("")
+    eprint("  STRICT — Capture everything")
+    eprint("    20–40 frames per 2-min. Every parameter tweak, every click.")
+    eprint("    Strict adherence to what you said/did. Nothing missed.")
+    eprint("    → Best for: Deep-dive parameter editing, detailed walkthroughs.")
     eprint("")
     eprint("  STANDARD (recommended) — Balanced")
     eprint("    10–20 frames per 2-min. Catches blocks placed, menus opened,")
     eprint("    dialogs appeared. The default sweet spot.")
     eprint("    → Best for: Most bug reports and UI reviews.")
     eprint("")
-    eprint("  LENIENT — Every change visible")
-    eprint("    20–40 frames per 2-min. Capture every parameter tweak,")
-    eprint("    every knob adjustment. For detailed specs and walkthroughs.")
-    eprint("    → Best for: Deep-dive parameter editing, detailed specs.")
+    eprint("  LENIENT — Landmark moments only")
+    eprint("    5–10 frames per 2-min. Major state shifts only.")
+    eprint("    Be lenient about small tweaks; focus on big changes.")
+    eprint("    → Best for: High-level demos, quick reviews.")
     eprint("")
-    eprint("  (You can override anytime with --mode strict|standard|lenient)\n")
-    mode_choice = input("  Enter s/t/l [default: t]: ").strip().lower()
-    mode_map = {"s": "strict", "t": "standard", "l": "lenient"}
+    eprint("  (You can override anytime with --mode insano|strict|standard|lenient)\n")
+    mode_choice = input("  Enter i/s/t/l [default: t]: ").strip().lower()
+    mode_map = {"i": "insano", "s": "strict", "t": "standard", "l": "lenient"}
     mode = mode_map.get(mode_choice, "standard")
     eprint(f"  ✓ {mode.upper()}\n")
 
@@ -478,8 +483,8 @@ def main():
                     help="Disable diff-based selection + pointer (fall back to scene/interval sampling)")
     ap.add_argument("--sample-fps", type=float, default=2.0,
                     help="Dense sample rate for diff mode (default 2/s)")
-    ap.add_argument("--mode", choices=["strict", "standard", "lenient"], default="standard",
-                    help="Diff threshold preset: strict (5–10 frames), standard (10–20), lenient (20–40) per 2-min clip (default standard)")
+    ap.add_argument("--mode", choices=["insano", "strict", "standard", "lenient"], default="standard",
+                    help="Diff threshold preset: insano (100+), strict (20–40), standard (10–20), lenient (5–10) per 2-min clip (default standard)")
     ap.add_argument("--diff-threshold", type=float, default=None,
                     help="Mean gray delta to count a frame as changed (overrides --mode; lower = more frames)")
     ap.add_argument("--no-transcribe", action="store_true", help="Skip transcription")
@@ -503,7 +508,7 @@ def main():
 
     # Map mode to diff_threshold unless explicitly overridden
     if args.diff_threshold is None:
-        mode_thresholds = {"strict": 2.5, "standard": 1.5, "lenient": 0.8}
+        mode_thresholds = {"insano": 0.2, "strict": 0.8, "standard": 1.5, "lenient": 2.5}
         args.diff_threshold = mode_thresholds.get(args.mode, 1.5)
 
     require_tool("ffmpeg")

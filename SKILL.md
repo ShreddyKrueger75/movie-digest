@@ -57,7 +57,7 @@ Then **read `<out>/transcript.md` first**, then view the frames listed in
 `<out>/frames_index.md` in batches of ~10–15. Anchor every claim to a timestamp.
 
 Flags that matter:
-- `--mode strict|standard|lenient` — frame selection aggressiveness (saves to config; default standard).
+- `--mode insano|strict|standard|lenient` — frame selection comprehensiveness (saves to config; default standard).
 - `--no-report` — skip HTML report (frames + digest.md only).
 - `--model tiny|base|small|medium|large-v3` — `tiny` for a quick screen
   recording, `base`/`small` for a real film. Bigger = more accurate, slower.

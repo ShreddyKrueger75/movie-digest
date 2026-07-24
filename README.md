@@ -73,11 +73,12 @@ Every digest includes:
 
 ## Modes — diff-threshold presets
 
-`--mode strict|standard|lenient` — tune how aggressive frame selection is.
+`--mode insano|strict|standard|lenient` — tune how comprehensive frame capture is.
 
-- **`strict`** — keep only major changes (high diff threshold). 5–10 frames per 2-min clip. For dense UIs where you only need the landmark moments.
+- **`insano`** — every single change. 100+ frames per 2-min clip. For forensic analysis of every interaction, cursor twitch, pixel shift.
+- **`strict`** — capture everything. 20–40 frames per 2-min clip. Strict adherence to what you said/did; nothing missed. For detailed walkthroughs and parameter-level specs.
 - **`standard`** (default) — balanced. 10–20 frames per 2-min clip. Catches blocks placed, menus opened, dialogs appeared.
-- **`lenient`** — capture subtle tweaks (low diff threshold). 20–40 frames per 2-min clip. For detailed reviews or specs that need every parameter tweak visible.
+- **`lenient`** — landmark moments only. 5–10 frames per 2-min clip. For high-level demos or quick reviews where you only need major state shifts.
 
 All modes keep the pointer and change-score columns, digest.md, and report.html. Only the number of kept frames changes.
 
