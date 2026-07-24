@@ -366,7 +366,7 @@ def try_ocr_region(frame_src: str) -> str:
 
 
 def emit_html_report(outdir: str, transcript: dict, frames: list, meta: dict):
-    """Self-contained HTML report: transcript + frames + pointers + OCR."""
+    """Self-contained HTML report: transcript + frames + pointers embedded as base64."""
     path = os.path.join(outdir, "report.html")
     fps = meta.get("fps", 0)
     segs = transcript.get("segments", []) if transcript else []
@@ -382,7 +382,15 @@ def emit_html_report(outdir: str, transcript: dict, frames: list, meta: dict):
             if seg["start"] <= fr["timestamp_seconds"] < seg["end"]:
                 p = fr.get("pointer")
                 ptxt = f"<div class=pointer>{p['region']} ({p['nx']:.2f}×{p['ny']:.2f})</div>" if p else ""
-                html.append(f"<img src={fr['file']} alt={fr['timestamp_hms']}>{ptxt}")
+                # Embed frame as base64 data: URI for true self-contained HTML
+                frame_path = os.path.join(outdir, fr['file'])
+                if os.path.isfile(frame_path):
+                    with open(frame_path, "rb") as fh:
+                        b64 = base64.b64encode(fh.read()).decode()
+                        src = f"data:image/jpeg;base64,{b64}"
+                else:
+                    src = fr['file']  # fallback to relative path if file missing
+                html.append(f"<img src={src} alt={fr['timestamp_hms']}>{ptxt}")
         html.append("</div>")
     html.append("</body></html>")
     with open(path, "w") as f:
