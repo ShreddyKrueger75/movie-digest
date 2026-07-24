@@ -16,13 +16,19 @@ Outputs (under --out, default <video>.digest):
   transcript.srt   subtitles
   transcript.json  raw {start, end, text} segments
   frames/          NNNN_HHhMMmSSs.jpg keyframes (downscaled)
-  frames_index.md  frame -> timestamp table
+  frames_index.md  frame -> timestamp + change score + pointer table
   manifest.json    metadata, params, full frame list, transcript paths
 
+Optimized for QA / bug-report screen recordings. By default it keeps only the
+frames that CHANGED (diff-based selection, not fixed intervals — a static screen
+stops flooding you with duplicates) and localizes the POINTER on each: the
+centroid of what changed vs the previous frame is roughly where the cursor /
+action was, the one thing raw frames never tell you. --no-dedup restores plain
+scene/interval sampling.
+
 Requires: ffmpeg + ffprobe on PATH  (brew install ffmpeg).
-Optional, auto-detected: faster-whisper (transcription), scenedetect (scene cuts).
-Without faster-whisper it skips the transcript; without scenedetect it samples
-frames at even time intervals — fine for screen recordings.
+Diff mode uses Pillow + numpy (auto-detected; falls back to interval if absent).
+Optional: faster-whisper (transcription), scenedetect (used only with --no-dedup).
 
 Usage:
   python3 digest_movie.py CLIP.mov
@@ -34,13 +40,13 @@ paths. See SKILL.md for the agent workflow and the filename/model gotchas.
 """
 
 import argparse
+import glob
 import json
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
-from datetime import timedelta
 
 
 def eprint(*a):
@@ -205,6 +211,91 @@ def extract_frame(video: str, ts: float, out_path: str, width: int) -> bool:
     return out.returncode == 0 and os.path.exists(out_path)
 
 
+# --- QA mode: diff-based keyframe selection + pointer localization ----------
+# A screen recording is ~90% static. Sampling every N seconds gives a pile of
+# near-identical frames. Instead, sample densely, then keep only the frames that
+# CHANGED from the last kept one (a block placed, a menu opened, a cable drawn).
+# The same frame diff also localizes the action: the centroid of the changed
+# pixels vs the previous frame is roughly where the cursor is — the one thing a
+# QA review needs and raw frames never tell you.
+
+def _np_gray(path: str, downscale_to: int = 320):
+    from PIL import Image
+    import numpy as np
+    im = Image.open(path).convert("L")
+    if downscale_to and im.width > downscale_to:
+        h = round(im.height * downscale_to / im.width)
+        im = im.resize((downscale_to, h))
+    return np.asarray(im, dtype="int16")
+
+
+def region_label(nx: float, ny: float) -> str:
+    col = "left" if nx < 1 / 3 else ("right" if nx > 2 / 3 else "center")
+    row = "top" if ny < 1 / 3 else ("bottom" if ny > 2 / 3 else "middle")
+    return "center" if (row == "middle" and col == "center") else f"{row}-{col}"
+
+
+def pointer_of(prev_gray, cur_gray, pixel_thresh: int = 28, min_pixels: int = 25):
+    """Centroid of the changed region between two frames ~= where the action is.
+    Returns {nx, ny, region, changed_fraction} or None when nothing moved."""
+    import numpy as np
+    diff = np.abs(cur_gray - prev_gray)
+    mask = diff > pixel_thresh
+    n = int(mask.sum())
+    if n < min_pixels:
+        return None
+    ys, xs = np.nonzero(mask)
+    nx = float(xs.mean()) / mask.shape[1]
+    ny = float(ys.mean()) / mask.shape[0]
+    return {"nx": round(nx, 3), "ny": round(ny, 3),
+            "region": region_label(nx, ny), "changed_fraction": round(n / mask.size, 4)}
+
+
+def dense_frames(video: str, fps: float, width: int, tmpdir: str):
+    """One ffmpeg pass -> tmpdir/dNNNNN.jpg at `fps`. Returns sorted paths."""
+    out = subprocess.run(
+        ["ffmpeg", "-y", "-i", video, "-vf", f"fps={fps},scale={width}:-2",
+         "-q:v", "4", os.path.join(tmpdir, "d%05d.jpg")],
+        capture_output=True, text=True,
+    )
+    if out.returncode != 0:
+        eprint("WARN: dense frame pass failed:", out.stderr.strip()[-400:])
+        return []
+    return sorted(glob.glob(os.path.join(tmpdir, "d*.jpg")))
+
+
+def select_keyframes(files, fps: float, diff_threshold: float, max_frames: int):
+    """Keep frames that changed from the last kept frame; annotate each with the
+    pointer (where the change was). Returns [{src, ts, score, ptr}]."""
+    import numpy as np
+    if not files:
+        return []
+    grays = [None] * len(files)
+
+    def g(i):
+        if grays[i] is None:
+            grays[i] = _np_gray(files[i])
+        return grays[i]
+
+    kept = [{"src": files[0], "ts": 0.0, "score": 0.0, "ptr": None}]
+    last = 0
+    for i in range(1, len(files)):
+        score = float(np.abs(g(i) - g(last)).mean())
+        if score >= diff_threshold:
+            kept.append({"src": files[i], "ts": i / fps, "score": round(score, 2),
+                         "ptr": pointer_of(g(i - 1), g(i))})
+            last = i
+    end = len(files) - 1
+    if last != end:  # the final state matters for QA even if change was gradual
+        kept.append({"src": files[end], "ts": end / fps,
+                     "score": round(float(np.abs(g(end) - g(last)).mean()), 2),
+                     "ptr": pointer_of(g(end - 1), g(end))})
+    if len(kept) > max_frames:  # keep first, last, and the biggest changes
+        mid = sorted(kept[1:-1], key=lambda k: k["score"], reverse=True)[:max_frames - 2]
+        kept = [kept[0]] + sorted(mid, key=lambda k: k["ts"]) + [kept[-1]]
+    return kept
+
+
 def main():
     ap = argparse.ArgumentParser(description="Prepare a local video for Claude to digest.")
     ap.add_argument("video", help="Path to the local video file")
@@ -217,6 +308,12 @@ def main():
     ap.add_argument("--frame-width", type=int, default=640, help="Keyframe width in px (default 640)")
     ap.add_argument("--scene-threshold", type=float, default=27.0, help="ContentDetector threshold (default 27)")
     ap.add_argument("--min-scene-len", type=float, default=1.0, help="Min scene length, frames (default ~1s)")
+    ap.add_argument("--no-dedup", action="store_true",
+                    help="Disable diff-based selection + pointer (fall back to scene/interval sampling)")
+    ap.add_argument("--sample-fps", type=float, default=2.0,
+                    help="Dense sample rate for diff mode (default 2/s)")
+    ap.add_argument("--diff-threshold", type=float, default=1.5,
+                    help="Mean gray delta to count a frame as changed (default 1.5; lower = more frames)")
     ap.add_argument("--no-transcribe", action="store_true", help="Skip transcription")
     ap.add_argument("--no-frames", action="store_true", help="Skip frame extraction")
     ap.add_argument("--keep-audio", action="store_true", help="Keep the extracted wav")
@@ -272,36 +369,71 @@ def main():
                        + ("  (no speech detected)" if n == 0 else ""))
             shutil.rmtree(tmpdir, ignore_errors=True)
 
-    # --- scenes + frames ---
+    # --- frames ---
     if not args.no_frames:
-        scenes = detect_scenes(video, args.scene_threshold, args.min_scene_len, meta["duration_seconds"])
-        manifest["scene_source"] = "scenedetect" if scenes else "interval"
-        if not scenes:
-            scenes = interval_scenes(meta["duration_seconds"], args.max_frames)
-        manifest["scene_count_detected"] = len(scenes)
-
-        idxs, picked = pick_scenes(scenes, args.max_frames)
-        eprint(f"[frames] {len(scenes)} scenes -> exporting {len(picked)} keyframes ({manifest['scene_source']})")
+        dedup = not args.no_dedup
+        if dedup:
+            try:
+                import PIL  # noqa: F401
+                import numpy  # noqa: F401
+            except ImportError:
+                eprint("WARN: Pillow/numpy not installed; diff mode off (pip install Pillow numpy).")
+                dedup = False
 
         frames = []
-        for out_i, (scene_i, (start, end)) in enumerate(zip(idxs, picked)):
-            mid = start + (end - start) / 2.0 if end > start else start
-            fname = f"{out_i:04d}_{hms(mid, compact=True)}.jpg"
-            if extract_frame(video, mid, os.path.join(frames_dir, fname), args.frame_width):
-                frames.append({"index": out_i, "file": os.path.join("frames", fname),
-                               "timestamp_seconds": round(mid, 3), "timestamp_hms": hms(mid),
-                               "scene_start": round(start, 3), "scene_end": round(end, 3)})
-            if (out_i + 1) % 20 == 0:
-                eprint(f"[frames] {out_i + 1}/{len(picked)}...")
+        if dedup:
+            manifest["scene_source"] = "diff"
+            tmpdir = tempfile.mkdtemp(prefix="digest_frames_")
+            try:
+                eprint(f"[frames] dense sampling @ {args.sample_fps}/s for diff selection...")
+                files = dense_frames(video, args.sample_fps, args.frame_width, tmpdir)
+                kept = select_keyframes(files, args.sample_fps, args.diff_threshold, args.max_frames)
+                eprint(f"[frames] {len(files)} sampled -> {len(kept)} kept (changed frames only)")
+                for out_i, k in enumerate(kept):
+                    ts = k["ts"]
+                    fname = f"{out_i:04d}_{hms(ts, compact=True)}.jpg"
+                    shutil.copyfile(k["src"], os.path.join(frames_dir, fname))
+                    frames.append({"index": out_i, "file": os.path.join("frames", fname),
+                                   "timestamp_seconds": round(ts, 3), "timestamp_hms": hms(ts),
+                                   "change_score": k["score"], "pointer": k["ptr"]})
+            finally:
+                shutil.rmtree(tmpdir, ignore_errors=True)
+        else:
+            scenes = detect_scenes(video, args.scene_threshold, args.min_scene_len, meta["duration_seconds"])
+            manifest["scene_source"] = "scenedetect" if scenes else "interval"
+            if not scenes:
+                scenes = interval_scenes(meta["duration_seconds"], args.max_frames)
+            manifest["scene_count_detected"] = len(scenes)
+            idxs, picked = pick_scenes(scenes, args.max_frames)
+            eprint(f"[frames] {len(scenes)} scenes -> exporting {len(picked)} keyframes ({manifest['scene_source']})")
+            for out_i, (scene_i, (start, end)) in enumerate(zip(idxs, picked)):
+                mid = start + (end - start) / 2.0 if end > start else start
+                fname = f"{out_i:04d}_{hms(mid, compact=True)}.jpg"
+                if extract_frame(video, mid, os.path.join(frames_dir, fname), args.frame_width):
+                    frames.append({"index": out_i, "file": os.path.join("frames", fname),
+                                   "timestamp_seconds": round(mid, 3), "timestamp_hms": hms(mid),
+                                   "scene_start": round(start, 3), "scene_end": round(end, 3)})
+                if (out_i + 1) % 20 == 0:
+                    eprint(f"[frames] {out_i + 1}/{len(picked)}...")
+
         manifest["frames"] = frames
 
         fi = os.path.join(outdir, "frames_index.md")
         with open(fi, "w") as f:
             f.write("# Keyframes\n\n")
             f.write(f"{len(frames)} frames from {meta['duration_hms']} ({manifest['scene_source']} sampling)\n\n")
-            f.write("| # | timestamp | file |\n|---|-----------|------|\n")
-            for fr in frames:
-                f.write(f"| {fr['index']} | {fr['timestamp_hms']} | {fr['file']} |\n")
+            if manifest["scene_source"] == "diff":
+                f.write("`pointer` = where the screen changed vs the previous frame (~cursor/action). "
+                        "`change` = how much changed.\n\n")
+                f.write("| # | timestamp | change | pointer | file |\n|---|---|---|---|---|\n")
+                for fr in frames:
+                    p = fr.get("pointer")
+                    ptxt = f"{p['region']} ({p['nx']:.2f},{p['ny']:.2f})" if p else "—"
+                    f.write(f"| {fr['index']} | {fr['timestamp_hms']} | {fr['change_score']} | {ptxt} | {fr['file']} |\n")
+            else:
+                f.write("| # | timestamp | file |\n|---|-----------|------|\n")
+                for fr in frames:
+                    f.write(f"| {fr['index']} | {fr['timestamp_hms']} | {fr['file']} |\n")
         manifest["frames_index_md"] = fi
         eprint(f"[frames] done: {len(frames)} exported")
 
@@ -315,7 +447,9 @@ def main():
         print(f"transcript: {manifest['transcript']['segment_count']} segments -> transcript.md  <-- READ THIS FIRST")
     else:
         print("transcript: (none — silent clip or --no-transcribe)")
-    print(f"frames:     {len(manifest['frames'])} -> frames/  (see frames_index.md)")
+    src = manifest.get("scene_source")
+    ptr = " (frames_index.md has the pointer/change columns)" if src == "diff" else ""
+    print(f"frames:     {len(manifest['frames'])} -> frames/  ({src} sampling){ptr}")
     print(f"manifest:   {os.path.join(outdir, 'manifest.json')}")
     print("\nNext: read transcript.md, THEN view the frames. The voice is the brief.")
 

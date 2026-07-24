@@ -48,7 +48,11 @@ Then **read `<out>/transcript.md` first**, then view the frames listed in
 Flags that matter:
 - `--model tiny|base|small|medium|large-v3` — `tiny` for a quick screen
   recording, `base`/`small` for a real film. Bigger = more accurate, slower.
-- `--max-frames N` — cap on keyframes (default 60; 20–30 for a short clip).
+- `--max-frames N` — cap on keyframes (default 60; 12–20 for a short clip).
+- `--diff-threshold N` — how much a frame must change to be kept (default 1.5;
+  lower = more frames). See QA mode below.
+- `--no-dedup` — turn OFF diff selection + pointer; use plain interval/scene
+  sampling instead.
 - `--no-frames` — transcript only, fast. Use when you only need the narration.
 - `--no-transcribe` — frames only (silent footage).
 - `--language en` — skip auto-detect.
@@ -60,9 +64,29 @@ transcript.md      timestamped, grep-friendly   <- READ FIRST
 transcript.srt     subtitles
 transcript.json    raw {start,end,text} segments
 frames/            NNNN_HHhMMmSSs.jpg keyframes (640px)
-frames_index.md    frame -> timestamp table
-manifest.json      metadata + full frame list + transcript paths
+frames_index.md    frame -> timestamp + change score + POINTER table
+manifest.json      metadata + full frame list (+ pointer) + transcript paths
 ```
+
+## QA mode (default): changed frames only + pointer
+
+This is built for **bug-report / UI-review screen recordings**, so by default it
+does two things a plain frame-dump can't:
+
+- **Diff-based selection.** A screen recording is ~90% static. Instead of one
+  frame every N seconds (a pile of duplicates), it samples densely, then keeps
+  only the frames that *changed* from the last kept one — a block placed, a menu
+  opened, a cable drawn. 169 sampled → ~12 meaningful.
+- **Pointer localization.** Each kept frame's `pointer` column is the centroid of
+  what changed vs the previous frame ≈ **where the cursor / action was**, as a
+  region (`top-right`, `center`, …) + normalized `(x,y)`. `change` is the
+  magnitude — a big number is a new screen/dialog; a small one is a local edit.
+
+Read `frames_index.md` and let the pointer + change columns tell you *where to
+look* in each frame before you open it. A **failure often shows as the absence of
+change** — the user says "wire it across" and the next frames don't change: that
+gap IS the bug. Needs Pillow + numpy (auto-detected; falls back to interval if
+missing). `--no-dedup` restores plain sampling.
 
 ## Gotchas (learned the hard way)
 

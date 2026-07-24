@@ -7,8 +7,12 @@ exporting keyframes, so the model can actually read what happens.
 Claude can't decode video or hear audio. This skill splits the work:
 
 - `scripts/digest_movie.py` transcribes the spoken dialogue with timestamps
-  (faster-whisper) and exports one downscaled keyframe per scene (PySceneDetect
-  + ffmpeg, or even time-interval sampling as a fallback).
+  (faster-whisper) and exports keyframes.
+- **Optimized for QA / bug-report recordings.** By default it keeps only the
+  frames that *changed* (diff-based selection — no more 20 duplicate frames of a
+  static screen) and localizes the **pointer** on each: where the screen changed
+  vs the previous frame ≈ where the cursor / action was. A failure often shows as
+  the *absence* of change. `--no-dedup` restores plain scene/interval sampling.
 - Claude then reads `transcript.md` and views the frames to write a structured
   digest.
 
@@ -30,7 +34,7 @@ Install the runtime deps once:
 
 ```bash
 brew install ffmpeg
-pip install faster-whisper scenedetect
+pip install Pillow numpy faster-whisper scenedetect
 ```
 
 Then tell Claude Code: **"digest this video: /path/to/clip.mov"** — or just hand
