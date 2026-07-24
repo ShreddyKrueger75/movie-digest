@@ -497,13 +497,26 @@ def prompt_config() -> dict:
     no_report = report_choice == "n"
     eprint(f"  ✓ {'SKIP' if no_report else 'GENERATE'} reports\n")
 
+    eprint("━━━ (3) Where should reports be saved? ━━━\n")
+    eprint("  Reports go to <video>.digest by default. Customize the base:")
+    eprint("    • Leave blank to save next to each video (default)")
+    eprint("    • Or specify a folder: ~/Documents/video-digests")
+    eprint("    • Or use an absolute path: /path/to/reports\n")
+    eprint("  ➜ Override per-run: --out /path/to/custom/folder\n")
+    output_dir = input("  Save reports to [default: same folder as video]: ").strip()
+    if output_dir:
+        output_dir = os.path.expanduser(output_dir)
+    eprint(f"  ✓ {'CUSTOM: ' + output_dir if output_dir else 'DEFAULT: <video>.digest'}\n")
+
     cfg = {"mode": mode, "no_report": no_report}
+    if output_dir:
+        cfg["output_dir"] = output_dir
     try:
         with open(config_path(), "w") as f:
             json.dump(cfg, f, indent=2)
         eprint(f"✓ Config saved to {config_path()}")
         eprint("  Reconfigure anytime: rm {config_path()}")
-        eprint("  Or override per-run: --mode CHOICE --no-report\n")
+        eprint("  Or override per-run: --mode CHOICE --no-report --out PATH\n")
     except Exception as e:
         eprint(f"WARN: could not save config: {e}\n")
     return cfg
@@ -567,7 +580,18 @@ def main():
         eprint("         f=$(ls *Recording*2.18*.mov); python3 digest_movie.py \"$f\"")
         sys.exit(2)
 
-    outdir = os.path.abspath(args.out) if args.out else video + ".digest"
+    # Determine output directory: CLI arg > config default > <video>.digest
+    if args.out:
+        outdir = os.path.abspath(args.out)
+    elif "output_dir" in cfg and cfg["output_dir"]:
+        # Use config's output_dir but create a subdir for each video
+        base_dir = cfg["output_dir"]
+        os.makedirs(base_dir, exist_ok=True)
+        video_name = os.path.splitext(os.path.basename(video))[0]
+        outdir = os.path.join(base_dir, video_name + ".digest")
+    else:
+        outdir = video + ".digest"
+
     frames_dir = os.path.join(outdir, "frames")
     os.makedirs(frames_dir, exist_ok=True)
 
