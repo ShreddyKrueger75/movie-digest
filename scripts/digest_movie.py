@@ -672,6 +672,12 @@ def main():
     eprint(f"[probe] {meta['duration_hms']}  {meta['width']}x{meta['height']}  "
            f"{meta['fps']}fps  audio={'yes' if meta['has_audio'] else 'NO'}")
 
+    # Warn if using tiny model on long clips
+    if args.model == "tiny" and meta["duration_seconds"] > 180:
+        eprint(f"WARN: 'tiny' on a {meta['duration_hms']} recording — this model fabricates plausible-sounding")
+        eprint(f"      text on long or sparsely-narrated clips. Re-run with --model small if the")
+        eprint(f"      transcript reads like nonsense.")
+
     manifest = {
         "video": video, "output_dir": outdir, "metadata": meta,
         "params": {"model": args.model, "language": args.language,
