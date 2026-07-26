@@ -50,7 +50,7 @@ Your choices save to `~/.movie-digest.json` — reconfigure anytime by deleting 
 
 ```bash
 python3 scripts/digest_movie.py "/path/to/CLIP.mov" \
-  --out "/path/to/CLIP.digest" --model tiny --max-frames 25
+  --out "/path/to/CLIP.digest" --model small --max-frames 25
 ```
 
 Then **read `<out>/transcript.md` first**, then view the frames listed in
@@ -60,8 +60,10 @@ Flags that matter:
 - `--mode insano|strict|standard|lenient` — frame selection comprehensiveness (saves to config; default standard).
 - `--no-report` — skip HTML report (frames + digest.md only).
 - `--analyze` — synthesize a structured bug report from the digest (requires `ANTHROPIC_API_KEY`).
-- `--model tiny|base|small|medium|large-v3` — `tiny` for a quick screen
-  recording, `base`/`small` for a real film. Bigger = more accurate, slower.
+- `--model tiny|base|small|medium|large-v3` — accuracy vs speed; choose based on clip length and importance:
+  - `tiny` — only for short clips (under ~2 minutes) with continuous narration. On longer or sparsely-narrated recordings it fabricates plausible-sounding text instead of failing.
+  - `small` — the safe default for anything longer, and for anything where the narration is the point (bug reports, reviews).
+  - Bigger models (`base`, `medium`, `large-v3`) = slower but more accurate. Use `base` for a real film or when a transcript reads like nonsense — re-run with a larger model before acting on it.
 - `--max-frames N` — cap on keyframes (default 60; 12–20 for a short clip).
 - `--diff-threshold N` — override mode's threshold (lower = more frames, default 1.5 for standard).
 - `--no-dedup` — turn OFF diff selection + pointer; use plain interval/scene
@@ -144,6 +146,7 @@ Bug report generation is opt-in via `--analyze`.
   than real time; `large-v3` is much slower. For a 1–2 min screen recording,
   `tiny --no-frames` returns in seconds.
 - **Silent clip → 0 segments.** Expected; lean on the frames.
+- **Digests must run sequentially.** Running several concurrently has hung. Sequential throughput is fine: ~40 minutes of video transcribed in about 5 minutes.
 
 ## Troubleshooting
 
