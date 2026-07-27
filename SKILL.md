@@ -37,14 +37,17 @@ recordings).
 
 ## Setup (first run)
 
-On first run, the script will prompt for your defaults:
+On first run in an interactive terminal, the script prompts for three defaults:
 
 ```
 (1) Diff-threshold mode — how aggressive frame selection is
 (2) Generate HTML report by default?
+(3) Output directory
 ```
 
 Your choices save to `~/.movie-digest.json` — reconfigure anytime by deleting that file.
+
+Non-interactive runs (e.g., Claude running the script) auto-write defaults (mode `standard`, HTML report on) without prompting.
 
 ## Run (the one path)
 
@@ -57,13 +60,16 @@ Then **read `<out>/transcript.md` first**, then view the frames listed in
 `<out>/frames_index.md` in batches of ~10–15. Anchor every claim to a timestamp.
 
 Flags that matter:
-- `--mode insano|strict|standard|lenient` — frame selection comprehensiveness (saves to config; default standard).
+- `--mode insano|strict|standard|lenient` — frame selection comprehensiveness (default standard).
 - `--no-report` — skip HTML report (frames + digest.md only).
 - `--analyze` — synthesize a structured bug report from the digest (requires `ANTHROPIC_API_KEY`).
+- `--analyze-model MODEL` — Claude model used by `--analyze` (default claude-haiku-4-5-20251001).
+- `--json` — machine-readable summary: JSON object with output_dir/manifest/outputs instead of human summary.
 - `--model tiny|base|small|medium|large-v3` — accuracy vs speed; choose based on clip length and importance:
   - `tiny` — only for short clips (under ~2 minutes) with continuous narration. On longer or sparsely-narrated recordings it fabricates plausible-sounding text instead of failing.
   - `small` — the safe default for anything longer, and for anything where the narration is the point (bug reports, reviews).
   - Bigger models (`base`, `medium`, `large-v3`) = slower but more accurate. Use `base` for a real film or when a transcript reads like nonsense — re-run with a larger model before acting on it.
+  - Segments marked `⚠️ low-confidence` in transcript.md have low Whisper confidence and may be misheard — re-check with a larger model before quoting.
 - `--max-frames N` — cap on keyframes (default 60; 12–20 for a short clip).
 - `--diff-threshold N` — override mode's threshold (lower = more frames, default 1.5 for standard).
 - `--no-dedup` — turn OFF diff selection + pointer; use plain interval/scene
@@ -112,9 +118,11 @@ Every digest now includes:
 
 - **digest.md** — the quick read: transcript segments woven together with
   keyframes that fall within each segment's time window. Pointer/region marked
-  inline. One document = one bug report.
+  inline. One document = one bug report. Trailing "Unmatched frames" section for
+  frames that fall outside any transcript segment (silence gaps, after the last spoken line).
 - **report.html** — self-contained (no external assets): transcript on the left,
   keyframes on the right, pointer overlay. Shareable, no post-processing needed.
+  Also includes the unmatched frames section.
 - **clicks.json** — detects small, localized changes (likely click flashes or
   menu appearances). Frames tagged with the suspected action moment. For QA mode
   only; empty if no candidate clicks found.
@@ -133,7 +141,7 @@ Bug report generation is opt-in via `--analyze`.
   or copy to a space-free path first:
   ```bash
   f=$(ls *Recording*9.40*.mov); cp "$f" /tmp/clip.mov
-  python3 scripts/digest_movie.py /tmp/clip.mov --out /tmp/clip.digest --model tiny
+  python3 scripts/digest_movie.py /tmp/clip.mov --out /tmp/clip.digest --model small
   ```
   The script prints this exact hint if it can't find the file.
 - **`--model tiny` mishears a word or two** — it heard "tempo" as "VPN" and

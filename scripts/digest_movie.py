@@ -147,7 +147,13 @@ def transcribe(wav: str, model_size: str, language, compute_type: str):
     for s in segments:
         text = s.text.strip()
         if text:
-            segs.append({"start": round(s.start, 3), "end": round(s.end, 3), "text": text})
+            segs.append({
+                "start": round(s.start, 3),
+                "end": round(s.end, 3),
+                "text": text,
+                "avg_logprob": round(s.avg_logprob, 3) if hasattr(s, 'avg_logprob') else None,
+                "no_speech_prob": round(s.no_speech_prob, 3) if hasattr(s, 'no_speech_prob') else None,
+            })
         if segs and len(segs) % 50 == 0:
             eprint(f"[transcribe] {len(segs)} segments... ({hms(s.end)})")
     return {"language": getattr(info, "language", language), "segments": segs}
@@ -162,8 +168,22 @@ def write_transcript(outdir: str, transcript: dict, meta: dict) -> dict:
         f.write(f"- Duration: {meta['duration_hms']}\n")
         f.write(f"- Language: {transcript.get('language')}\n")
         f.write(f"- Segments: {len(segs)}\n\n")
+        # Check if any segments have low confidence
+        has_low_confidence = any(
+            (s.get("avg_logprob") and s["avg_logprob"] < -1.0) or
+            (s.get("no_speech_prob") and s["no_speech_prob"] > 0.5)
+            for s in segs
+        )
+        if has_low_confidence:
+            f.write("**Note:** Some segments marked with ⚠️ have low confidence scores. The text may be "
+                    "fabricated or misheard. Re-run with a larger `--model` (e.g., small, medium) before trusting these lines.\n\n")
         for s in segs:
-            f.write(f"[{hms(s['start'])}] {s['text']}\n")
+            text = s['text']
+            # Flag low-confidence segments
+            if (s.get("avg_logprob") and s["avg_logprob"] < -1.0) or \
+               (s.get("no_speech_prob") and s["no_speech_prob"] > 0.5):
+                text += " ⚠️ low-confidence"
+            f.write(f"[{hms(s['start'])}] {text}\n")
     paths["transcript_md"] = md
 
     srt = os.path.join(outdir, "transcript.srt")
@@ -315,19 +335,33 @@ def digest_interleaved(outdir: str, transcript: dict, frames: list, meta: dict):
     with open(path, "w") as f:
         f.write(f"# Digest: {meta.get('duration_hms')}\n\n")
         segs = transcript.get("segments", []) if transcript else []
+        emitted_frame_indices = set()
         for i, seg in enumerate(segs):
             f.write(f"**[{hms(seg['start'])}]** {seg['text']}\n")
             for fr in frames:
                 if seg["start"] <= fr["timestamp_seconds"] < seg["end"]:
+                    emitted_frame_indices.add(fr["index"])
                     p = fr.get("pointer")
                     ptxt = f" — *{p['region']} ({p['nx']:.2f}×{p['ny']:.2f})*" if p else ""
                     f.write(f"![{fr['timestamp_hms']}]({fr['file']}){ptxt}\n")
             if i < len(segs) - 1:
                 f.write("\n")
+
+        # Append unmatched frames in a trailing section
+        unmatched = [fr for fr in frames if fr["index"] not in emitted_frame_indices]
+        if unmatched:
+            if segs:
+                f.write("\n---\n\n")
+            f.write("## Unmatched Frames\n\n")
+            f.write("Frames outside speech windows (silence gaps or after the last segment):\n\n")
+            for fr in sorted(unmatched, key=lambda x: x["timestamp_seconds"]):
+                p = fr.get("pointer")
+                ptxt = f" — *{p['region']} ({p['nx']:.2f}×{p['ny']:.2f})*" if p else ""
+                f.write(f"![{fr['timestamp_hms']}]({fr['file']}){ptxt}\n")
     return path
 
 
-def detect_clicks(frames: list):
+def detect_clicks(outdir: str, frames: list):
     """Flag frames where change is small + localized (likely a click flash)."""
     try:
         import numpy as np
@@ -339,39 +373,11 @@ def detect_clicks(frames: list):
         if score < 3.0 and frames[i].get("pointer"):  # small, localized change
             clicks[i] = {"ts": frames[i]["timestamp_seconds"], "score": score}
     if clicks:
-        path = os.path.join(os.path.dirname(frames[0]["file"]), "clicks.json")
-        root = os.path.dirname(os.path.dirname(path))
-        with open(os.path.join(root, "clicks.json"), "w") as f:
+        path = os.path.join(outdir, "clicks.json")
+        with open(path, "w") as f:
             json.dump(clicks, f)
-        return os.path.join(root, "clicks.json")
+        return path
     return None
-
-
-def try_crop_region(frame_src: str, out_path: str, pad: int = 50):
-    """Save a zoomed crop of the changed region (if pointer available)."""
-    try:
-        from PIL import Image
-        im = Image.open(frame_src)
-        w, h = im.size
-        # ponytail: no explicit region data, crop center-heavy; upgrade if full bbox tracked
-        x0, y0 = max(0, w // 2 - 100), max(0, h // 2 - 100)
-        x1, y1 = min(w, w // 2 + 100), min(h, h // 2 + 100)
-        im.crop((x0, y0, x1, y1)).save(out_path)
-        return True
-    except Exception:
-        return False
-
-
-def try_ocr_region(frame_src: str) -> str:
-    """OCR the changed region; returns text or empty string."""
-    try:
-        import pytesseract
-        from PIL import Image
-        im = Image.open(frame_src).convert("RGB")
-        text = pytesseract.image_to_string(im)
-        return text.strip()
-    except Exception:
-        return ""
 
 
 def emit_html_report(outdir: str, transcript: dict, frames: list, meta: dict):
@@ -385,10 +391,12 @@ def emit_html_report(outdir: str, transcript: dict, frames: list, meta: dict):
     html.append(".seg p{margin:0 0 10px}img{max-width:100%;height:auto;border:1px solid #ddd;margin:5px 0}")
     html.append(".pointer{font-size:0.9em;color:#666;font-style:italic}")
     html.append("</style><body><h1>Video Digest</h1>")
+    emitted_frame_indices = set()
     for seg in segs:
         html.append(f"<div class=seg><p><strong>[{hms(seg['start'])}]</strong> {escape(seg['text'])}</p>")
         for fr in frames:
             if seg["start"] <= fr["timestamp_seconds"] < seg["end"]:
+                emitted_frame_indices.add(fr["index"])
                 p = fr.get("pointer")
                 ptxt = f"<div class=pointer>{p['region']} ({p['nx']:.2f}×{p['ny']:.2f})</div>" if p else ""
                 # Embed frame as base64 data: URI for true self-contained HTML
@@ -399,20 +407,31 @@ def emit_html_report(outdir: str, transcript: dict, frames: list, meta: dict):
                         src = f"data:image/jpeg;base64,{b64}"
                 else:
                     src = fr['file']  # fallback to relative path if file missing
-                html.append(f"<img src={src} alt={fr['timestamp_hms']}>{ptxt}")
+                html.append(f"<img src=\"{src}\" alt=\"{fr['timestamp_hms']}\">{ptxt}")
         html.append("</div>")
+
+    # Append unmatched frames in a trailing section
+    unmatched = [fr for fr in frames if fr["index"] not in emitted_frame_indices]
+    if unmatched:
+        html.append("<div class=seg><h2>Unmatched Frames</h2>")
+        html.append("<p>Frames outside speech windows (silence gaps or after the last segment):</p>")
+        for fr in sorted(unmatched, key=lambda x: x["timestamp_seconds"]):
+            p = fr.get("pointer")
+            ptxt = f"<div class=pointer>{p['region']} ({p['nx']:.2f}×{p['ny']:.2f})</div>" if p else ""
+            frame_path = os.path.join(outdir, fr['file'])
+            if os.path.isfile(frame_path):
+                with open(frame_path, "rb") as fh:
+                    b64 = base64.b64encode(fh.read()).decode()
+                    src = f"data:image/jpeg;base64,{b64}"
+            else:
+                src = fr['file']
+            html.append(f"<img src=\"{src}\" alt=\"{fr['timestamp_hms']}\">{ptxt}")
+        html.append("</div>")
+
     html.append("</body></html>")
     with open(path, "w") as f:
         f.write("\n".join(html))
     return path
-
-
-def add_whisper_confidence(transcript: dict, confidence_threshold: float = 0.8):
-    """Flag low-confidence segments (< threshold) for manual review."""
-    if not transcript:
-        return
-    for seg in transcript.get("segments", []):
-        seg["confidence"] = "high"  # ponytail: whisper doesn't expose per-segment confidence; add if available
 
 
 def config_path() -> str:
@@ -527,14 +546,14 @@ def prompt_config() -> dict:
         with open(config_path(), "w") as f:
             json.dump(cfg, f, indent=2)
         eprint(f"✓ Config saved to {config_path()}")
-        eprint("  Reconfigure anytime: rm {config_path()}")
+        eprint(f"  Reconfigure anytime: rm {config_path()}")
         eprint("  Or override per-run: --mode CHOICE --no-report --out PATH\n")
     except Exception as e:
         eprint(f"WARN: could not save config: {e}\n")
     return cfg
 
 
-def analyze_digest(outdir: str, transcript: dict) -> str:
+def analyze_digest(outdir: str, transcript: dict, model: str = "claude-haiku-4-5-20251001", frames: list = None) -> str:
     """Use Claude to synthesize bug findings from the digest."""
     if Anthropic is None:
         eprint("ERROR: --analyze requires: pip install anthropic")
@@ -552,12 +571,11 @@ def analyze_digest(outdir: str, transcript: dict) -> str:
     eprint("[analyze] calling Claude to synthesize findings...")
 
     client = Anthropic()
-    msg = client.messages.create(
-        model="claude-opus-4-8",
-        max_tokens=2000,
-        messages=[{
-            "role": "user",
-            "content": f"""You are a QA engineer analyzing a screen recording digest.
+
+    # Build message content: text + images
+    content = [{
+        "type": "text",
+        "text": f"""You are a QA engineer analyzing a screen recording digest.
 
 The digest below contains a transcript (what was said) woven with keyframes
 (what changed on screen). Timestamps are like [00:00:15].
@@ -576,7 +594,42 @@ Keep it concise and actionable — this goes into a GitHub issue.
 
 {digest_content}
 """
-        }]
+    }]
+
+    # Attach up to 10 frames with highest change_score
+    if frames:
+        sorted_frames = sorted(
+            [fr for fr in frames if fr.get("change_score") is not None],
+            key=lambda x: x["change_score"],
+            reverse=True
+        )[:10]
+        for fr in sorted_frames:
+            frame_path = os.path.join(outdir, fr['file'])
+            if os.path.isfile(frame_path):
+                try:
+                    with open(frame_path, "rb") as fh:
+                        b64 = base64.b64encode(fh.read()).decode()
+                    p = fr.get("pointer")
+                    pointer_text = f"pointer {p['region']}" if p else "no pointer"
+                    content.append({
+                        "type": "text",
+                        "text": f"Frame at {fr['timestamp_hms']}, {pointer_text}"
+                    })
+                    content.append({
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/jpeg",
+                            "data": b64
+                        }
+                    })
+                except Exception as e:
+                    eprint(f"[analyze] WARN: could not attach frame {fr['file']}: {e}")
+
+    msg = client.messages.create(
+        model=model,
+        max_tokens=2000,
+        messages=[{"role": "user", "content": content}]
     )
 
     findings = msg.content[0].text
@@ -597,8 +650,8 @@ def main():
     ap = argparse.ArgumentParser(description="Prepare a local video for Claude to digest.")
     ap.add_argument("video", help="Path to the local video file")
     ap.add_argument("--out", default=None, help="Output dir (default: <video>.digest)")
-    ap.add_argument("--model", default="base",
-                    help="Whisper size: tiny/base/small/medium/large-v3 (default base; tiny for quick screen-recordings)")
+    ap.add_argument("--model", default="small",
+                    help="Whisper size: tiny/base/small/medium/large-v3 (default small; tiny fabricates on long clips)")
     ap.add_argument("--language", default=None, help="Force language code (e.g. en); default auto-detect")
     ap.add_argument("--compute-type", default="int8", help="faster-whisper compute type (default int8)")
     ap.add_argument("--max-frames", type=int, default=60, help="Max keyframes to export (default 60)")
@@ -617,13 +670,28 @@ def main():
     ap.add_argument("--no-frames", action="store_true", help="Skip frame extraction")
     ap.add_argument("--no-report", action="store_true", help="Skip HTML report generation")
     ap.add_argument("--analyze", action="store_true", help="Synthesize a structured bug report from the digest (requires ANTHROPIC_API_KEY)")
+    ap.add_argument("--analyze-model", default="claude-haiku-4-5-20251001", help="Claude model for --analyze (default claude-haiku-4-5-20251001)")
+    ap.add_argument("--json", action="store_true", help="Output JSON summary instead of human-readable text")
     ap.add_argument("--keep-audio", action="store_true", help="Keep the extracted wav")
     args = ap.parse_args()
 
     # Load or initialize config
     cfg = load_or_init_config()
     if not cfg:
-        cfg = prompt_config()
+        if sys.stdin.isatty():
+            cfg = prompt_config()
+        else:
+            # Non-interactive: use defaults and write to config file
+            cfg = {"mode": "standard", "no_report": False}
+            try:
+                os.makedirs(os.path.dirname(config_path()), exist_ok=True)
+                with open(config_path(), "w") as f:
+                    json.dump(cfg, f, indent=2)
+                eprint(f"[config] Using defaults (saved to {config_path()})")
+                eprint(f"[config] Reconfigure: delete the file and rerun interactively")
+            except Exception as e:
+                eprint(f"[config] WARN: could not save defaults: {e}")
+                eprint(f"[config] Continuing with in-memory defaults")
 
     # Apply config defaults if CLI args not explicitly set (mode and no_report)
     # For simplicity: if args.mode is still "standard" (default), use config mode
@@ -796,7 +864,7 @@ def main():
                 outputs["html"] = emit_html_report(outdir, tr or {"segments": []}, manifest["frames"], meta)
             if manifest.get("scene_source") == "diff":
                 eprint("[output] clicks.json...")
-                clicks = detect_clicks(manifest["frames"])
+                clicks = detect_clicks(outdir, manifest["frames"])
                 if clicks:
                     outputs["clicks"] = clicks
         except Exception as e:
@@ -806,7 +874,7 @@ def main():
     if args.analyze:
         try:
             if tr:
-                result = analyze_digest(outdir, tr)
+                result = analyze_digest(outdir, tr, model=args.analyze_model, frames=manifest.get("frames"))
                 if result:
                     outputs["bug_report"] = result
             else:
@@ -815,24 +883,34 @@ def main():
             eprint(f"WARN: --analyze failed: {e}")
             eprint("      Set ANTHROPIC_API_KEY environment variable to use this feature")
 
-    print("\n=== DIGEST PREP COMPLETE ===")
-    print(f"output_dir: {outdir}")
-    print(f"duration:   {meta['duration_hms']}")
-    if manifest["transcript"]:
-        print(f"transcript: {manifest['transcript']['segment_count']} segments -> transcript.md")
+    if args.json:
+        # Output JSON summary
+        json_output = {
+            "output_dir": outdir,
+            "manifest": os.path.join(outdir, "manifest.json"),
+            "outputs": {k: v for k, v in outputs.items() if k != "manifest"}
+        }
+        print(json.dumps(json_output, indent=2))
     else:
-        print("transcript: (none — silent clip or --no-transcribe)")
-    src = manifest.get("scene_source")
-    ptr = " (frames_index.md has the pointer/change columns)" if src == "diff" else ""
-    print(f"frames:     {len(manifest['frames'])} -> frames/  ({src} sampling){ptr}")
-    for key, path in outputs.items():
-        if key != "manifest":
-            print(f"{key:12} {os.path.basename(path)}")
-    print(f"\nKey outputs:")
-    print(f"  • digest.md — transcript + keyframes woven by time")
-    print(f"  • report.html — self-contained review document")
-    print(f"  • frames_index.md — pointer + change scores for each frame")
-    print(f"  • clicks.json — suspected click/action moments (diff mode only)")
+        # Human-readable output
+        print("\n=== DIGEST PREP COMPLETE ===")
+        print(f"output_dir: {outdir}")
+        print(f"duration:   {meta['duration_hms']}")
+        if manifest["transcript"]:
+            print(f"transcript: {manifest['transcript']['segment_count']} segments -> transcript.md")
+        else:
+            print("transcript: (none — silent clip or --no-transcribe)")
+        src = manifest.get("scene_source")
+        ptr = " (frames_index.md has the pointer/change columns)" if src == "diff" else ""
+        print(f"frames:     {len(manifest['frames'])} -> frames/  ({src} sampling){ptr}")
+        for key, path in outputs.items():
+            if key != "manifest":
+                print(f"{key:12} {os.path.basename(path)}")
+        print(f"\nKey outputs:")
+        print(f"  • digest.md — transcript + keyframes woven by time")
+        print(f"  • report.html — self-contained review document")
+        print(f"  • frames_index.md — pointer + change scores for each frame")
+        print(f"  • clicks.json — suspected click/action moments (diff mode only)")
 
 
 if __name__ == "__main__":
