@@ -44,11 +44,14 @@ it a screen recording and ask what happens.
 
 ```bash
 python3 scripts/digest_movie.py "/path/to/clip.mov" \
-  --out "/path/to/clip.digest" --model tiny --max-frames 25 --analyze
+  --out "/path/to/clip.digest" --model small --max-frames 25 --analyze
 ```
 
-- `--model tiny|base|small|medium|large-v3` — accuracy vs. speed. `tiny` for a
-  quick screen recording; `base`/`small` for a real film.
+- `--model tiny|base|small|medium|large-v3` — accuracy vs. speed. `tiny` only safe
+  for short (<~2 min) continuously-narrated clips; fabricates text otherwise.
+  `small` is the safe default; bigger models slower but more accurate.
+- `--analyze-model MODEL` — Claude model used by `--analyze` (default claude-haiku-4-5-20251001).
+- `--json` — machine-readable summary: JSON object with output_dir/manifest/outputs instead of human summary.
 - `--max-frames N` — keyframe cap (default 60).
 - `--analyze` — synthesize a structured bug report (needs `ANTHROPIC_API_KEY` env var).
 - `--no-frames` — transcript only, fast.
@@ -63,8 +66,9 @@ fallback).
 Every digest includes:
 
 **Primary outputs** (the QA workflow):
-- **digest.md** — transcript + keyframes woven by time. Read top-to-bottom; pointer + region marked inline on each frame.
-- **report.html** — self-contained HTML review (email-friendly, no external deps). Transcript on left, keyframes on right, pointer overlay. Shareable as-is.
+- **digest.md** — transcript + keyframes woven by time. Read top-to-bottom; pointer + region marked inline on each frame. Includes "Unmatched frames" section for silent gaps and frames outside transcript segments.
+- **report.html** — self-contained HTML review (email-friendly, no external deps). Transcript on left, keyframes on right, pointer overlay. Shareable as-is. Also shows unmatched frames.
+- **transcript.md** — timestamped narration. Segments marked with `⚠️ low-confidence` may be misheard (low Whisper confidence); re-check those with a larger `--model` before quoting.
 - **bug_report.md** (with `--analyze`) — Claude-synthesized structured bug report: issue title, repro steps, expected/actual, affected areas, key timestamps. Ready to paste into GitHub.
 - **clicks.json** — detected click/action moments (small, localized changes). Frame index + estimated timestamp for each suspected interaction.
 
