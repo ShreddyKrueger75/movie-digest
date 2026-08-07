@@ -144,6 +144,7 @@ def transcribe(wav: str, model_size: str, language, compute_type: str):
         vad_parameters=dict(min_silence_duration_ms=500),
     )
     segs = []
+    next_report = 50
     for s in segments:
         text = s.text.strip()
         if text:
@@ -154,9 +155,16 @@ def transcribe(wav: str, model_size: str, language, compute_type: str):
                 "avg_logprob": round(s.avg_logprob, 3) if hasattr(s, 'avg_logprob') else None,
                 "no_speech_prob": round(s.no_speech_prob, 3) if hasattr(s, 'no_speech_prob') else None,
             })
-        if segs and len(segs) % 50 == 0:
+        if len(segs) >= next_report:
             eprint(f"[transcribe] {len(segs)} segments... ({hms(s.end)})")
+            next_report += 50
     return {"language": getattr(info, "language", language), "segments": segs}
+
+
+def is_low_confidence(seg: dict) -> bool:
+    lp = seg.get("avg_logprob")
+    ns = seg.get("no_speech_prob")
+    return (lp is not None and lp < -1.0) or (ns is not None and ns > 0.5)
 
 
 def write_transcript(outdir: str, transcript: dict, meta: dict) -> dict:
@@ -168,20 +176,12 @@ def write_transcript(outdir: str, transcript: dict, meta: dict) -> dict:
         f.write(f"- Duration: {meta['duration_hms']}\n")
         f.write(f"- Language: {transcript.get('language')}\n")
         f.write(f"- Segments: {len(segs)}\n\n")
-        # Check if any segments have low confidence
-        has_low_confidence = any(
-            (s.get("avg_logprob") and s["avg_logprob"] < -1.0) or
-            (s.get("no_speech_prob") and s["no_speech_prob"] > 0.5)
-            for s in segs
-        )
-        if has_low_confidence:
+        if any(is_low_confidence(s) for s in segs):
             f.write("**Note:** Some segments marked with ⚠️ have low confidence scores. The text may be "
                     "fabricated or misheard. Re-run with a larger `--model` (e.g., small, medium) before trusting these lines.\n\n")
         for s in segs:
             text = s['text']
-            # Flag low-confidence segments
-            if (s.get("avg_logprob") and s["avg_logprob"] < -1.0) or \
-               (s.get("no_speech_prob") and s["no_speech_prob"] > 0.5):
+            if is_low_confidence(s):
                 text += " ⚠️ low-confidence"
             f.write(f"[{hms(s['start'])}] {text}\n")
     paths["transcript_md"] = md
@@ -227,8 +227,12 @@ def interval_scenes(duration: float, n: int):
 
 def pick_scenes(scenes, max_frames: int):
     """Evenly downsample to <= max_frames, keeping first and last."""
+    if max_frames <= 0:
+        return [], []
     if len(scenes) <= max_frames:
         return list(range(len(scenes))), scenes
+    if max_frames == 1:
+        return [0], [scenes[0]]
     idxs = sorted({round(i * (len(scenes) - 1) / (max_frames - 1)) for i in range(max_frames)})
     return idxs, [scenes[i] for i in idxs]
 
@@ -301,10 +305,12 @@ def select_keyframes(files, fps: float, diff_threshold: float, max_frames: int):
     import numpy as np
     if not files:
         return []
-    grays = [None] * len(files)
+    # Only three frames are ever needed at once (current, previous, last-kept);
+    # caching every decoded frame costs ~500MB on a 40-min clip at 2fps.
+    grays = {}
 
     def g(i):
-        if grays[i] is None:
+        if i not in grays:
             grays[i] = _np_gray(files[i])
         return grays[i]
 
@@ -316,6 +322,8 @@ def select_keyframes(files, fps: float, diff_threshold: float, max_frames: int):
             kept.append({"src": files[i], "ts": i / fps, "score": round(score, 2),
                          "ptr": pointer_of(g(i - 1), g(i))})
             last = i
+        for j in [k for k in grays if k < min(last, i - 1)]:
+            del grays[j]
     end = len(files) - 1
     if last != end:  # the final state matters for QA even if change was gradual
         kept.append({"src": files[end], "ts": end / fps,
@@ -363,19 +371,18 @@ def digest_interleaved(outdir: str, transcript: dict, frames: list, meta: dict):
 
 def detect_clicks(outdir: str, frames: list):
     """Flag frames where change is small + localized (likely a click flash)."""
-    try:
-        import numpy as np
-    except ImportError:
-        return
-    clicks = {}
-    for i in range(len(frames) - 1):
-        score = frames[i].get("change_score", 0)
-        if score < 3.0 and frames[i].get("pointer"):  # small, localized change
-            clicks[i] = {"ts": frames[i]["timestamp_seconds"], "score": score}
+    clicks = []
+    for fr in frames:
+        score = fr.get("change_score", 0)
+        p = fr.get("pointer")
+        if score < 3.0 and p:  # small, localized change
+            clicks.append({"frame": fr["index"], "ts": fr["timestamp_seconds"],
+                           "score": score, "region": p["region"],
+                           "nx": p["nx"], "ny": p["ny"]})
     if clicks:
         path = os.path.join(outdir, "clicks.json")
         with open(path, "w") as f:
-            json.dump(clicks, f)
+            json.dump(clicks, f, indent=2)
         return path
     return None
 
@@ -632,7 +639,10 @@ Keep it concise and actionable — this goes into a GitHub issue.
         messages=[{"role": "user", "content": content}]
     )
 
-    findings = msg.content[0].text
+    findings = next((b.text for b in msg.content if getattr(b, "type", None) == "text"), None)
+    if not findings:
+        eprint("ERROR: --analyze got no text back from the model")
+        return None
 
     # Write findings to bug_report.md
     report_path = os.path.join(outdir, "bug_report.md")
@@ -662,13 +672,15 @@ def main():
                     help="Disable diff-based selection + pointer (fall back to scene/interval sampling)")
     ap.add_argument("--sample-fps", type=float, default=2.0,
                     help="Dense sample rate for diff mode (default 2/s)")
-    ap.add_argument("--mode", choices=["insano", "strict", "standard", "lenient"], default="standard",
-                    help="Diff threshold preset: insano (100+), strict (20–40), standard (10–20), lenient (5–10) per 2-min clip (default standard)")
+    ap.add_argument("--mode", choices=["insano", "strict", "standard", "lenient"], default=None,
+                    help="Diff threshold preset: insano (100+), strict (20–40), standard (10–20), lenient (5–10) per 2-min clip (default standard, or saved config)")
     ap.add_argument("--diff-threshold", type=float, default=None,
                     help="Mean gray delta to count a frame as changed (overrides --mode; lower = more frames)")
     ap.add_argument("--no-transcribe", action="store_true", help="Skip transcription")
     ap.add_argument("--no-frames", action="store_true", help="Skip frame extraction")
     ap.add_argument("--no-report", action="store_true", help="Skip HTML report generation")
+    ap.add_argument("--report", action="store_true",
+                    help="Force HTML report generation (overrides a saved no_report config)")
     ap.add_argument("--analyze", action="store_true", help="Synthesize a structured bug report from the digest (requires ANTHROPIC_API_KEY)")
     ap.add_argument("--analyze-model", default="claude-haiku-4-5-20251001", help="Claude model for --analyze (default claude-haiku-4-5-20251001)")
     ap.add_argument("--json", action="store_true", help="Output JSON summary instead of human-readable text")
@@ -693,12 +705,12 @@ def main():
                 eprint(f"[config] WARN: could not save defaults: {e}")
                 eprint(f"[config] Continuing with in-memory defaults")
 
-    # Apply config defaults if CLI args not explicitly set (mode and no_report)
-    # For simplicity: if args.mode is still "standard" (default), use config mode
-    # and if args.no_report is False (default), use config no_report
-    if args.mode == "standard" and "mode" in cfg:
+    # Precedence: explicit CLI flag > saved config > built-in default.
+    if args.mode is None:
         args.mode = cfg.get("mode", "standard")
-    if not args.no_report and "no_report" in cfg:
+    if args.report:
+        args.no_report = False
+    elif not args.no_report:
         args.no_report = cfg.get("no_report", False)
 
     # Map mode to diff_threshold unless explicitly overridden
@@ -750,7 +762,9 @@ def main():
         "video": video, "output_dir": outdir, "metadata": meta,
         "params": {"model": args.model, "language": args.language,
                    "max_frames": args.max_frames, "frame_width": args.frame_width,
-                   "scene_threshold": args.scene_threshold},
+                   "scene_threshold": args.scene_threshold, "mode": args.mode,
+                   "diff_threshold": args.diff_threshold, "sample_fps": args.sample_fps,
+                   "dedup": not args.no_dedup},
         "transcript": None, "frames": [], "scene_source": None,
     }
 

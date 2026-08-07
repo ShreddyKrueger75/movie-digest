@@ -56,6 +56,7 @@ python3 scripts/digest_movie.py "/path/to/clip.mov" \
 - `--analyze` — synthesize a structured bug report (needs `ANTHROPIC_API_KEY` env var).
 - `--no-frames` — transcript only, fast.
 - `--no-transcribe` — frames only (silent footage).
+- `--report` / `--no-report` — force the HTML report on/off, overriding the saved config.
 
 See `SKILL.md` for the full agent workflow, all flags, and the gotchas
 (macOS narrow-space filenames, `tiny` mishearings, the scenedetect/OpenCV
@@ -70,7 +71,7 @@ Every digest includes:
 - **report.html** — self-contained HTML review (email-friendly, no external deps). Transcript on left, keyframes on right, pointer overlay. Shareable as-is. Also shows unmatched frames.
 - **transcript.md** — timestamped narration. Segments marked with `⚠️ low-confidence` may be misheard (low Whisper confidence); re-check those with a larger `--model` before quoting.
 - **bug_report.md** (with `--analyze`) — Claude-synthesized structured bug report: issue title, repro steps, expected/actual, affected areas, key timestamps. Ready to paste into GitHub.
-- **clicks.json** — detected click/action moments (small, localized changes). Frame index + estimated timestamp for each suspected interaction.
+- **clicks.json** — detected click/action moments (small, localized changes). JSON list with frame index, estimated timestamp, and pointer region for each suspected interaction.
 
 **Reference outputs**:
 - **frames_index.md** — pointer + change-score table for every kept frame. Glanceable; tells you where to look before opening an image.
@@ -101,6 +102,16 @@ All modes keep the pointer and change-score columns, digest.md, and report.html.
 - Silent footage → `transcript.md` has 0 segments (expected); the digest leans
   on the frames.
 - Cost and time scale with `--max-frames` and Whisper `--model` size.
+
+## Development
+
+```bash
+pip install pytest
+python3 -m pytest tests/
+```
+
+The tests cover the pure logic (timestamp formatting, frame selection, pointer
+math, click detection, markdown emitters) — no ffmpeg or Whisper needed.
 
 ## License
 

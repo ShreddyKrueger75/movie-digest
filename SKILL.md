@@ -61,7 +61,8 @@ Then **read `<out>/transcript.md` first**, then view the frames listed in
 
 Flags that matter:
 - `--mode insano|strict|standard|lenient` — frame selection comprehensiveness (default standard).
-- `--no-report` — skip HTML report (frames + digest.md only).
+- `--no-report` — skip HTML report (frames + digest.md only). `--report` forces
+  it back on if the saved config has reports off.
 - `--analyze` — synthesize a structured bug report from the digest (requires `ANTHROPIC_API_KEY`).
 - `--analyze-model MODEL` — Claude model used by `--analyze` (default claude-haiku-4-5-20251001).
 - `--json` — machine-readable summary: JSON object with output_dir/manifest/outputs instead of human summary.
@@ -124,8 +125,8 @@ Every digest now includes:
   keyframes on the right, pointer overlay. Shareable, no post-processing needed.
   Also includes the unmatched frames section.
 - **clicks.json** — detects small, localized changes (likely click flashes or
-  menu appearances). Frames tagged with the suspected action moment. For QA mode
-  only; empty if no candidate clicks found.
+  menu appearances). A JSON list of `{frame, ts, score, region, nx, ny}` per
+  suspected action. For QA mode only; absent if no candidate clicks found.
 - **bug_report.md** (with `--analyze`) — Claude synthesizes a structured bug report:
   issue title, steps to reproduce, expected/actual behavior, affected areas, and
   key timestamps. Requires `ANTHROPIC_API_KEY` environment variable.
